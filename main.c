@@ -39,7 +39,7 @@
 
 #include "icon.h"
 
-#define VERSION_STRING              "hddled 0.33/20220628"
+#define VERSION_STRING              "hddled 0.34/20220707"
 #define DEFAULT_UPDATE_INTERVAL     100     // ms->0.1s
 #define MIN_UPDATE_INTERVAL         10
 #define MAX_UPDATE_INTERVAL         10000
@@ -112,13 +112,14 @@ void usage_message(void) {
 }
 
 void error(const char *format, ...) {
-    char        message[1024];
+    char        *message;
     va_list     list;
 
     va_start(list, format);
-    vsprintf(message, format, list);
+    vasprintf(&message, format, list);
     fprintf(stderr, "%s: %s\n\n", my_name, message);
     va_end(list);
+    free(message);
     exit(EXIT_FAILURE);
 }
 
@@ -456,7 +457,7 @@ int scan_devices(void) {
             BLK_DEV *new_dev = mk_blk_dev(namelist[i]->d_name);
             read_stat(new_dev);
             g_timeout_add(update_interval, update, new_dev);
-            free(namelist[count]);
+            free(namelist[i]);
         }
         free(namelist);
     }
