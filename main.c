@@ -39,7 +39,7 @@
 
 #include "icon.h"
 
-#define VERSION_STRING              "hddled 0.34/20220707"
+#define VERSION_STRING              "hddled 0.35/20220708"
 #define DEFAULT_UPDATE_INTERVAL     100     // ms->0.1s
 #define MIN_UPDATE_INTERVAL         10
 #define MAX_UPDATE_INTERVAL         10000
@@ -311,6 +311,8 @@ void process_options(int argc, char *argv[]) {
     if(opt_inactive_color) {
         if(!is_color_ok(opt_inactive_color))
             error("bad inactive color specification -- 6 hex digits expected");
+        set_color(ICON_PATTERN_xx, UPPER_ARROW_IX, opt_inactive_color);
+        set_color(ICON_PATTERN_xx, LOWER_ARROW_IX, opt_inactive_color);
         set_color(ICON_PATTERN_xW, UPPER_ARROW_IX, opt_inactive_color);
         set_color(ICON_PATTERN_Rx, LOWER_ARROW_IX, opt_inactive_color);
     }
