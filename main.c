@@ -39,12 +39,13 @@
 
 #include "icon.h"
 
-#define VERSION_STRING              "hddled 0.35/20220708"
+#define VERSION_STRING              "hddled 0.36/20220712"
 #define DEFAULT_UPDATE_INTERVAL     100     // ms->0.1s
 #define MIN_UPDATE_INTERVAL         10
 #define MAX_UPDATE_INTERVAL         10000
 #define NEW_DEV_UPDATE_INTERVAL     1000    // ms->1s
 #define SPINLOCK_INTERVAL           100     // us->0.1s
+#define SECOND_CHANCE_DELAY         25000   // us->0.025s
 #define PID_FILE_NAME               ".hddled.pid"
 #define WR_MASK                     0x01
 #define RD_MASK                     0x02
@@ -476,17 +477,19 @@ noreturn void *new_dev_monitor() {
         ssize_t res = read(fd, _event, sizeof(_event));
         assert(res > 0);
         struct inotify_event *event = (struct inotify_event *) _event;
-        if(event->len > 0            && 
-           event->mask & IN_CREATE   && 
-           !(event->mask & IN_ISDIR) && 
-           filter_name(event->name)) {
-                char dev_name[NAME_MAX + 1];
-                mk_blk_dev_stat_name(dev_name, event->name);
-                if(0 == access(dev_name, R_OK)) {
-                    while(!new_dev_storage.empty)
-                        usleep(SPINLOCK_INTERVAL);
-                    strcpy(new_dev_storage.name, event->name);
-                    new_dev_storage.empty = false;
+        if(event->len > 0 && event->mask & IN_CREATE && !(event->mask & IN_ISDIR) && filter_name(event->name)) {
+            char dev_name[NAME_MAX + 1];
+            mk_blk_dev_stat_name(dev_name, event->name);
+            bool dev_found = (0 == access(dev_name, R_OK));
+            if(!dev_found) {
+                usleep(SECOND_CHANCE_DELAY);
+                dev_found = (0 == access(dev_name, R_OK));
+            }
+            if(dev_found) {
+                while(!new_dev_storage.empty)
+                    usleep(SPINLOCK_INTERVAL);
+                strcpy(new_dev_storage.name, event->name);
+                new_dev_storage.empty = false;
             }
         }
     }
