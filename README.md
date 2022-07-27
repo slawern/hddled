@@ -60,6 +60,7 @@ Possible options are:
  -u milliseconds - interval between subsequent disk activity checks (defaults to 100)
  -q              - quit the previously started daemon
  -w RRGGBB       - disk write LED color (defaults to 0000FF)
+ -x pref         - exclude /dev/pref* devices from monitoring (can be used more than once)
 ````
 
 ## What's next?

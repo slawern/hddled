@@ -39,7 +39,7 @@
 
 #include "icon.h"
 
-#define VERSION_STRING              "hddled 0.36/20220712"
+#define VERSION_STRING              "hddled 0.37/20220727"
 #define DEFAULT_UPDATE_INTERVAL     100     // ms->0.1s
 #define MIN_UPDATE_INTERVAL         10
 #define MAX_UPDATE_INTERVAL         10000
@@ -53,6 +53,7 @@
 #define READ_LED_COLOR              "00FF00"
 #define INACTIVE_LED_COLOR          "3C3C3C"
 #define BACKGROUND_COLOR            "000000"
+#define MAX_EXCLUDED_DEVS            18
 
 typedef long long int LONGLONG;
 
@@ -74,6 +75,11 @@ typedef struct {
     char            name[NAME_MAX + 1];
 } NEW_DEV_STORAGE;
 
+typedef struct {
+    int             size;
+    char           *prefixes[MAX_EXCLUDED_DEVS];
+} EXCLUDED_DEVICES;
+
 GdkPixbuf           *icon_xx, 
                     *icon_Rx, 
                     *icon_xW, 
@@ -94,6 +100,7 @@ char                *opt_interval           = NULL,
                     *opt_write_color        = NULL,
                     *opt_background_color   = NULL,
                     *opt_inactive_color     = NULL;
+EXCLUDED_DEVICES     excluded_devs = { 2, { ".", "loop" } };
 
 void usage_message(void) {
     fprintf(stderr,
@@ -108,6 +115,7 @@ void usage_message(void) {
             "\n -u milliseconds - interval between subsequent disk activity checks (defaults to %d)"
             "\n -q              - quit the previously started daemon"
             "\n -w RRGGBB       - disk write LED color (defaults to " WRITE_LED_COLOR ")"
+            "\n -x pref         - exclude /dev/pref* devices from monitoring (can be used more than once)"
             "\n\n",
             my_name, DEFAULT_UPDATE_INTERVAL);
 }
@@ -146,7 +154,6 @@ bool is_pid_file_valid(pid_t pid) {
     name[len - 1] = '\0';
     return strcmp(name, my_name) == 0;
 }
-
 
 bool write_pid_file(char *filename) {
     char buff[16];
@@ -212,6 +219,29 @@ bool set_color(char **icon, int index, const char *color) {
     return true;
 }
 
+bool filter_name(const char *name) {
+    for(int i = 0; i < excluded_devs.size; i++) {
+        char *p = excluded_devs.prefixes[i];
+        if (0 == strncmp(name, p, strlen(p)))
+            return false;
+    }
+    return true;
+}
+
+int filter(const struct dirent *entry) {
+    return filter_name(entry->d_name);
+}
+
+bool add_new_exclusion(const char* name) {
+    if(!filter_name(name))
+        return true;
+    if(excluded_devs.size == MAX_EXCLUDED_DEVS)
+        return false;
+    excluded_devs.prefixes[excluded_devs.size++] = strdup(name);
+    return true;
+}
+
+
 void process_options(int argc, char *argv[]) {
     int     option;
     int     opt_counter = 0;
@@ -219,7 +249,7 @@ void process_options(int argc, char *argv[]) {
 
     my_name = argv[0] = base_name(argv[0]);
     opterr = 0;
-    while ((option = getopt(argc, argv, "b:dhi:lr:u:w:q")) != -1) {
+    while ((option = getopt(argc, argv, "b:dhi:lr:u:w:x:q")) != -1) {
         switch (option) {
             case 'b':
                 opt_counter++;
@@ -256,6 +286,11 @@ void process_options(int argc, char *argv[]) {
             case 'w':
                 opt_counter++;
                 opt_write_color = optarg;
+                break;
+            case 'x':
+                opt_counter++;
+                if(!add_new_exclusion(optarg))
+                    fprintf(stderr, "exclusion table full - %s ignored\n", optarg);
                 break;
             default: /* '?' */
                 error("unknown option: %s", argv[optind - 1]);
@@ -334,6 +369,13 @@ void process_options(int argc, char *argv[]) {
         if(!write_pid_file(name))
             error("cannot write pid file");
     }
+    if(opt_help)
+        usage_message();
+    if(opt_licence)
+        puts("\n" MIT_LICENCE_STRING);
+    if(opt_help || opt_licence)
+        exit(EXIT_SUCCESS);
+    fprintf(stderr, "Run '%s -h' to see possible options\n", my_name);
 }
 
 char *skip_blanks(char *ptr) {
@@ -439,18 +481,6 @@ BLK_DEV *mk_blk_dev(char *name) {
     return dev;
 }
 
-bool filter_name(const char *name) {
-    static char *excluded[] = { ".", "loop", NULL };
-    for(char **p = excluded; *p != NULL; p++)
-        if(0 == strncmp(name, *p, strlen(*p)))
-            return false;
-    return true;
-}
-
-int filter(const struct dirent *entry) {
-    return filter_name(entry->d_name);
-}
-
 int scan_devices(void) {
     struct dirent **namelist;
 
@@ -540,13 +570,6 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "\n" VERSION_STRING " " COPYRIGHT_STRING "\n\n");
     mk_icons();
     process_options(argc, argv);
-    if(opt_help)
-        usage_message();
-    if(opt_licence)
-        puts("\n" MIT_LICENCE_STRING);
-    if(opt_help || opt_licence)
-        return EXIT_SUCCESS;
-    fprintf(stderr, "Run '%s -h' to see possible options\n", my_name);
     gdk_threads_init();
     gtk_init(NULL, NULL);
     icon_xx = gdk_pixbuf_new_from_xpm_data((const char **) ICON_PATTERN_xx);
