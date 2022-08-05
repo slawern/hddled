@@ -39,13 +39,18 @@
 
 #include "icon.h"
 
-#define VERSION_STRING              "hddled 0.37/20220727"
+#define _STR_(x)                    #x
+#define TO_STR(x)                   _STR_(x)
+#define NOT(x)                      (!(x))
+#define IS_DUMMY(x)                 ((x)[0] == '\0')
+
+#define VERSION_STRING              "hddled 0.45/20220805"
 #define DEFAULT_UPDATE_INTERVAL     100     // ms->0.1s
 #define MIN_UPDATE_INTERVAL         10
 #define MAX_UPDATE_INTERVAL         10000
 #define NEW_DEV_UPDATE_INTERVAL     1000    // ms->1s
 #define SPINLOCK_INTERVAL           100     // us->0.1s
-#define SECOND_CHANCE_DELAY         25000   // us->0.025s
+#define SECOND_CHANCE_DELAY         50000   // us->0.05s
 #define PID_FILE_NAME               ".hddled.pid"
 #define WR_MASK                     0x01
 #define RD_MASK                     0x02
@@ -54,21 +59,26 @@
 #define INACTIVE_LED_COLOR          "3C3C3C"
 #define BACKGROUND_COLOR            "000000"
 #define MAX_EXCLUDED_DEVS            18
-
-typedef long long int LONGLONG;
+#define DUMMY_DEV_NAME              ""
+#define EMPTY_TOOLTIP               "</>"
 
 typedef struct {
     char            blk_device[NAME_MAX + 1],
-                    blk_device_stat[PATH_MAX + 1],
-                    status;
-    LONGLONG        read, 
-                    prev_read;
-    LONGLONG        written, 
-                    prev_written;
+                    blk_device_stat[PATH_MAX + 1];
+    uint8_t         status;
     GtkStatusIcon  *status_icon;
     GdkPixbuf      *current_icon, 
                    *last_icon;
+    uint64_t        read,
+                    prev_read;
+    uint64_t        written,
+                    prev_written;
 } BLK_DEV;
+
+typedef struct {
+    int         devs_no;
+    BLK_DEV   **devs_list;
+} KNOWN_DEVS;
 
 typedef struct {
     bool            empty;
@@ -89,35 +99,104 @@ char                *ICON_PATTERN_xx[ICON_PATTERN_ELEMS],
                     *ICON_PATTERN_xW[ICON_PATTERN_ELEMS],
                     *ICON_PATTERN_RW[ICON_PATTERN_ELEMS];
 char                *my_name;
-NEW_DEV_STORAGE      new_dev_storage        = { true };
+NEW_DEV_STORAGE      new_dev_storage        = { .empty = true,
+                                                .name  = ""  };
 unsigned int         update_interval        = DEFAULT_UPDATE_INTERVAL;
 bool                 opt_kill               = false,
                      opt_daemon             = false,
                      opt_help               = false,
-                     opt_licence            = false;
+                     opt_licence            = false,
+                     opt_combine            = false;
 char                *opt_interval           = NULL,
                     *opt_read_color         = NULL,
                     *opt_write_color        = NULL,
                     *opt_background_color   = NULL,
                     *opt_inactive_color     = NULL;
-EXCLUDED_DEVICES     excluded_devs = { 2, { ".", "loop" } };
+
+KNOWN_DEVS           known_devices          = { .devs_no   = 0,
+                                                .devs_list = NULL };
+
+EXCLUDED_DEVICES     excluded_devs          = { .size      = 2,
+                                                .prefixes  = { ".", "loop" } };
+
+BLK_DEV              dummy_dev              = { .blk_device         = "",
+                                                .blk_device_stat    = "",
+                                                .status             = 0,
+                                                .read               = 0L,
+                                                .prev_read          = 0L,
+                                                .written            = 0L,
+                                                .prev_written       = 0L,
+                                                .status_icon        = NULL,
+                                                .current_icon       = NULL,
+                                                .last_icon          = NULL };
+
+
+void set_dummy_tooltip(void) {
+    char tipstr[1024] = { '\0' };
+    int  i;
+
+    for(i = 0; i < known_devices.devs_no; i++) {
+        strcat(tipstr, known_devices.devs_list[i]->blk_device);
+        if(i != known_devices.devs_no - 1)
+            strcat(tipstr, "\n");
+    }
+    gtk_status_icon_set_tooltip_text(dummy_dev.status_icon, i == 0 ? EMPTY_TOOLTIP : tipstr);
+}
+
+void realloc_known_devices(void) {
+    if(known_devices.devs_no == 0) {
+        free(known_devices.devs_list);
+        known_devices.devs_list = NULL;
+    } else {
+        known_devices.devs_list = realloc(known_devices.devs_list, sizeof(BLK_DEV *) * known_devices.devs_no);
+        assert(known_devices.devs_list != NULL);
+    }
+}
+
+void add_device_to_known(BLK_DEV *dev) {
+    if(known_devices.devs_no == 0) {
+        known_devices.devs_no = 1;
+        known_devices.devs_list = malloc(sizeof(BLK_DEV *));
+        assert(known_devices.devs_list != NULL);
+    } else {
+        known_devices.devs_no++;
+        realloc_known_devices();
+    }
+    known_devices.devs_list[known_devices.devs_no - 1] = dev;
+    if(opt_combine)
+        set_dummy_tooltip();
+}
+
+void remove_device_from_known(BLK_DEV *dev) {
+    for(int i = 0; i < known_devices.devs_no; i++)
+        if(known_devices.devs_list[i] == dev) {
+            if(i < known_devices.devs_no - 1)
+                known_devices.devs_list[i] = known_devices.devs_list[known_devices.devs_no - 1];
+            known_devices.devs_no--;
+            realloc_known_devices();
+            break;
+        }
+    if(opt_combine)
+        set_dummy_tooltip();
+}
 
 void usage_message(void) {
     fprintf(stderr,
             "Usage: %s [options...]\n"
             "\nPossible options are:"
             "\n -b RRGGBB       - LEDs' background color (defaults to " BACKGROUND_COLOR ")"
+            "\n -c              - combine activity of all devices into single icon"
             "\n -d              - daemonize hddled process"
             "\n -h              - print this help message and quit"
             "\n -i RRGGBB       - inactive LED color (defaults to " INACTIVE_LED_COLOR ")"
             "\n -l              - print license notice and quit"
             "\n -r RRGGBB       - disk read LED color (defaults to " READ_LED_COLOR ")"
-            "\n -u milliseconds - interval between subsequent disk activity checks (defaults to %d)"
+            "\n -u milliseconds - interval between subsequent disk activity checks (defaults to " TO_STR(DEFAULT_UPDATE_INTERVAL) ")"
             "\n -q              - quit the previously started daemon"
             "\n -w RRGGBB       - disk write LED color (defaults to " WRITE_LED_COLOR ")"
             "\n -x pref         - exclude /dev/pref* devices from monitoring (can be used more than once)"
             "\n\n",
-            my_name, DEFAULT_UPDATE_INTERVAL);
+            my_name);
 }
 
 void error(const char *format, ...) {
@@ -186,14 +265,14 @@ pid_t read_pid_file(char *filename) {
     if(strlen(opt_str) != 6)
         return false;
     for(int i = 0; i < 6; i++)
-        if(!isxdigit(opt_str[i]))
+        if(NOT(isxdigit(opt_str[i])))
             return false;
     return true;
 }
 
 bool set_color(char **icon, int index, const char *color) {
 
-    if(!is_color_ok(color))
+    if(NOT(is_color_ok(color)))
         return false;
 
     char code = '\0';
@@ -233,14 +312,13 @@ int filter(const struct dirent *entry) {
 }
 
 bool add_new_exclusion(const char* name) {
-    if(!filter_name(name))
+    if(NOT(filter_name(name)))
         return true;
     if(excluded_devs.size == MAX_EXCLUDED_DEVS)
         return false;
     excluded_devs.prefixes[excluded_devs.size++] = strdup(name);
     return true;
 }
-
 
 void process_options(int argc, char *argv[]) {
     int     option;
@@ -249,11 +327,15 @@ void process_options(int argc, char *argv[]) {
 
     my_name = argv[0] = base_name(argv[0]);
     opterr = 0;
-    while ((option = getopt(argc, argv, "b:dhi:lr:u:w:x:q")) != -1) {
+    while ((option = getopt(argc, argv, "b:cdhi:lr:u:w:x:q")) != -1) {
         switch (option) {
             case 'b':
                 opt_counter++;
                 opt_background_color = optarg;
+                break;
+            case 'c':
+                opt_counter++;
+                opt_combine = true;
                 break;
             case 'd':
                 opt_counter++;
@@ -289,7 +371,7 @@ void process_options(int argc, char *argv[]) {
                 break;
             case 'x':
                 opt_counter++;
-                if(!add_new_exclusion(optarg))
+                if(NOT(add_new_exclusion(optarg)))
                     fprintf(stderr, "exclusion table full - %s ignored\n", optarg);
                 break;
             default: /* '?' */
@@ -319,25 +401,25 @@ void process_options(int argc, char *argv[]) {
         }
     }
     if(opt_interval) {
-        LONGLONG  m_seconds = strtoll(opt_interval, &end_ptr, 10);
+        int64_t  m_seconds = strtoll(opt_interval, &end_ptr, 10);
         if(*end_ptr != '\0' || m_seconds < MIN_UPDATE_INTERVAL || m_seconds > MAX_UPDATE_INTERVAL)
-            error("illegal update interval value: %s", opt_interval);
+            error("illegal update_actual_device interval value: %s", opt_interval);
         update_interval = m_seconds;
     }
     if(opt_read_color) {
-        if(!is_color_ok(opt_read_color))
+        if(NOT(is_color_ok(opt_read_color)))
             error("bad read icon color specification -- 6 hex digits expected");
         set_color(ICON_PATTERN_Rx, UPPER_ARROW_IX, opt_read_color);
         set_color(ICON_PATTERN_RW, UPPER_ARROW_IX, opt_read_color);
     }
     if(opt_write_color) {
-        if(!is_color_ok(opt_write_color))
+        if(NOT(is_color_ok(opt_write_color)))
             error("bad write icon color specification -- 6 hex digits expected");
         set_color(ICON_PATTERN_xW, LOWER_ARROW_IX, opt_write_color);
         set_color(ICON_PATTERN_RW, LOWER_ARROW_IX, opt_write_color);
     }
     if(opt_background_color) {
-        if(!is_color_ok(opt_background_color))
+        if(NOT(is_color_ok(opt_background_color)))
             error("bad background color specification -- 6 hex digits expected");
         set_color(ICON_PATTERN_xx, BACKGROUND_COLOR_IX, opt_background_color);
         set_color(ICON_PATTERN_Rx, BACKGROUND_COLOR_IX, opt_background_color);
@@ -345,7 +427,7 @@ void process_options(int argc, char *argv[]) {
         set_color(ICON_PATTERN_RW, BACKGROUND_COLOR_IX, opt_background_color);
     }
     if(opt_inactive_color) {
-        if(!is_color_ok(opt_inactive_color))
+        if(NOT(is_color_ok(opt_inactive_color)))
             error("bad inactive color specification -- 6 hex digits expected");
         set_color(ICON_PATTERN_xx, UPPER_ARROW_IX, opt_inactive_color);
         set_color(ICON_PATTERN_xx, LOWER_ARROW_IX, opt_inactive_color);
@@ -366,7 +448,7 @@ void process_options(int argc, char *argv[]) {
         }
         result = daemon(false, false);
         assert(result == 0);
-        if(!write_pid_file(name))
+        if(NOT(write_pid_file(name)))
             error("cannot write pid file");
     }
     if(opt_help)
@@ -385,15 +467,23 @@ char *skip_blanks(char *ptr) {
 }
 
 char *skip_non_blanks(char *ptr) {
-    while(!isspace(*ptr))
+    while(NOT(isspace(*ptr)))
         ptr++;
     return ptr;
 }
 
-bool read_stat(BLK_DEV *stat_data) {
+void update_dev_status(BLK_DEV *blk_dev) {
+    blk_dev->status = 0;
+    if(blk_dev->prev_read != blk_dev->read)
+        blk_dev->status |= RD_MASK;
+    if(blk_dev->prev_written != blk_dev->written)
+        blk_dev->status |= WR_MASK;
+}
+
+bool read_stat(BLK_DEV *blk_dev) {
     char buff[4096], *end_ptr;
 
-    int fd = open(stat_data->blk_device_stat, O_RDONLY);
+    int fd = open(blk_dev->blk_device_stat, O_RDONLY);
     if(fd < 0)
         return false;
     ssize_t length = read(fd, buff, sizeof(buff));
@@ -402,64 +492,81 @@ bool read_stat(BLK_DEV *stat_data) {
 
     char *p1 = skip_blanks(buff), *p2 = skip_non_blanks(p1);
     *p2 = '\0';
-    stat_data->status = 0;
-    stat_data->prev_read = stat_data->read;
-    stat_data->read = strtoll(p1, &end_ptr, 10);
-    if(stat_data->prev_read != stat_data->read)
-        stat_data->status |= RD_MASK;
+    blk_dev->prev_read = blk_dev->read;
+    blk_dev->read = strtoll(p1, &end_ptr, 10);
     p2++;
     for(int i = 0; i < 4; i++) {
         p1 = skip_blanks(p2);
         p2 = skip_non_blanks(p1);
     }
     *p2 = '\0';
-    stat_data->prev_written = stat_data->written;
-    stat_data->written = strtoll(p1, &end_ptr, 10);
-    if(stat_data->prev_written != stat_data->written)
-        stat_data->status |= WR_MASK;
+    blk_dev->prev_written = blk_dev->written;
+    blk_dev->written = strtoll(p1, &end_ptr, 10);
+    update_dev_status(blk_dev);
     return true;
 }
 
 void rm_blk_dev(BLK_DEV *dev) {
-    gtk_status_icon_set_visible(dev->status_icon, false);
-    g_object_unref(G_OBJECT(dev->status_icon));
+    if(NOT(opt_combine)) {
+        gtk_status_icon_set_visible(dev->status_icon, false);
+        g_object_unref(G_OBJECT(dev->status_icon));
+    }
     free(dev);
 }
 
-gboolean update(gpointer _dev) {
-    bool        result;
-    BLK_DEV    *dev     = (BLK_DEV *)_dev;
-    bool        exists  = read_stat(dev);
+void update_icon_state(BLK_DEV *dev) {
+    assert(dev->status_icon >= 0 && dev->status <= 3);
+    switch (dev->status) {
+        case 0:     // no changes
+            dev->current_icon = icon_xx;
+            break;
+        case 1:     // written changed
+            dev->current_icon = icon_xW;
+            break;
+        case 2:     // read changed
+            dev->current_icon = icon_Rx;
+            break;
+        case 3:     // read and written changed
+            dev->current_icon = icon_RW;
+            break;
+        default:    // ?
+            ;
+    }
+    if (dev->current_icon != dev->last_icon) {
+        gtk_status_icon_set_from_pixbuf(dev->status_icon, dev->current_icon);
+        gtk_status_icon_set_visible(dev->status_icon, true);
+        dev->last_icon = dev->current_icon;
+    }
+}
 
-    if(!exists) {
+gboolean update_dummy_device(gpointer _dev) {
+    assert(_dev == NULL);
+    dummy_dev.status = 0;
+    for(int i = 0; i < known_devices.devs_no; ) {
+        BLK_DEV *this = known_devices.devs_list[i];
+        if(NOT(read_stat(this))) {
+            rm_blk_dev(this);
+            remove_device_from_known(this);
+            continue;
+        }
+        dummy_dev.status |= this->status;
+        i++;
+    }
+    update_icon_state(&dummy_dev);
+    return true;
+}
+
+gboolean update_actual_device(gpointer _dev) {
+    assert(_dev != NULL);
+    BLK_DEV *dev    = (BLK_DEV *)_dev;
+    bool     exists = read_stat(dev);
+
+    if(NOT(exists)) {
         rm_blk_dev(dev);
-        result = false;
+        return false;
     }
-    else {
-        switch (dev->status) {
-            case 0:     // no changes
-                dev->current_icon = icon_xx;
-                break;
-            case 1:     // written changed
-                dev->current_icon = icon_xW;
-                break;
-            case 2:     // read changed
-                dev->current_icon = icon_Rx;
-                break;
-            case 3:     // read and written changed
-                dev->current_icon = icon_RW;
-                break;
-            default:    // ?
-                ;
-        }
-        if (dev->current_icon != dev->last_icon) {
-            gtk_status_icon_set_from_pixbuf(dev->status_icon, dev->current_icon);
-            gtk_status_icon_set_visible(dev->status_icon, true);
-            dev->last_icon = dev->current_icon;
-        }
-        result = true;
-    }
-    return result;
+    update_icon_state(dev);
+    return true;
 }
 
 char *mk_blk_dev_stat_name(char *stat_name, const char *dev_name) {
@@ -468,20 +575,26 @@ char *mk_blk_dev_stat_name(char *stat_name, const char *dev_name) {
 }
 
 BLK_DEV *mk_blk_dev(char *name) {
-    BLK_DEV *dev = malloc(sizeof(BLK_DEV));
+    BLK_DEV *dev      = NULL;
+    bool     is_dummy = IS_DUMMY(name);
+
+    dev = is_dummy ? &dummy_dev : malloc(sizeof(BLK_DEV));
     assert(dev != NULL);
     strcpy(dev->blk_device, name);
-    mk_blk_dev_stat_name(dev->blk_device_stat, name);
-    dev->status_icon = gtk_status_icon_new();
-    gtk_status_icon_set_from_pixbuf(dev->status_icon, icon_xx);
-    gtk_status_icon_set_visible(dev->status_icon, true);
-    gtk_status_icon_set_tooltip_text(dev->status_icon, dev->blk_device);
-    dev->last_icon = dev->current_icon = icon_xx;
+    if(NOT(is_dummy))
+        mk_blk_dev_stat_name(dev->blk_device_stat, name);
+    if(opt_combine == is_dummy) {
+        dev->status_icon = gtk_status_icon_new();
+        gtk_status_icon_set_from_pixbuf(dev->status_icon, icon_xx);
+        gtk_status_icon_set_visible(dev->status_icon, true);
+        gtk_status_icon_set_tooltip_text(dev->status_icon, is_dummy ? EMPTY_TOOLTIP : dev->blk_device);
+        dev->last_icon = dev->current_icon = icon_xx;
+    }
     dev->prev_read = dev->prev_written = 0;
     return dev;
 }
 
-int scan_devices(void) {
+int scan_actual_devices(void) {
     struct dirent **namelist;
 
     int count = scandir("/sys/block", &namelist, filter, NULL);
@@ -489,8 +602,10 @@ int scan_devices(void) {
         for(int i = 0; i < count; i++) {
             BLK_DEV *new_dev = mk_blk_dev(namelist[i]->d_name);
             read_stat(new_dev);
-            g_timeout_add(update_interval, update, new_dev);
+            if(NOT(opt_combine))
+                g_timeout_add(update_interval, update_actual_device, new_dev);
             free(namelist[i]);
+            add_device_to_known(new_dev);
         }
         free(namelist);
     }
@@ -507,16 +622,16 @@ noreturn void *new_dev_monitor() {
         ssize_t res = read(fd, _event, sizeof(_event));
         assert(res > 0);
         struct inotify_event *event = (struct inotify_event *) _event;
-        if(event->len > 0 && event->mask & IN_CREATE && !(event->mask & IN_ISDIR) && filter_name(event->name)) {
+        if(event->len > 0 && event->mask & IN_CREATE && NOT(event->mask & IN_ISDIR) && filter_name(event->name)) {
             char dev_name[NAME_MAX + 1];
             mk_blk_dev_stat_name(dev_name, event->name);
             bool dev_found = (0 == access(dev_name, R_OK));
-            if(!dev_found) {
+            if(NOT(dev_found)) {
                 usleep(SECOND_CHANCE_DELAY);
                 dev_found = (0 == access(dev_name, R_OK));
             }
             if(dev_found) {
-                while(!new_dev_storage.empty)
+                while(NOT(new_dev_storage.empty))
                     usleep(SPINLOCK_INTERVAL);
                 strcpy(new_dev_storage.name, event->name);
                 new_dev_storage.empty = false;
@@ -526,10 +641,12 @@ noreturn void *new_dev_monitor() {
 }
 
 gboolean register_new_dev() {
-    if(!new_dev_storage.empty) {
+    if(NOT(new_dev_storage.empty)) {
         BLK_DEV *new_dev = mk_blk_dev(new_dev_storage.name);
         read_stat(new_dev);
-        g_timeout_add(update_interval, update, new_dev);
+        if(NOT(opt_combine))
+            g_timeout_add(update_interval, update_actual_device, new_dev);
+        add_device_to_known(new_dev);
         new_dev_storage.empty = true;
     }
     return true;
@@ -564,6 +681,11 @@ void mk_icons(void) {
     set_color(ICON_PATTERN_RW, UPPER_ARROW_IX,      READ_LED_COLOR);
     set_color(ICON_PATTERN_RW, LOWER_ARROW_IX,      WRITE_LED_COLOR);
     set_color(ICON_PATTERN_RW, BACKGROUND_COLOR_IX, BACKGROUND_COLOR);
+
+    icon_xx = gdk_pixbuf_new_from_xpm_data((const char **) ICON_PATTERN_xx);
+    icon_Rx = gdk_pixbuf_new_from_xpm_data((const char **) ICON_PATTERN_Rx);
+    icon_xW = gdk_pixbuf_new_from_xpm_data((const char **) ICON_PATTERN_xW);
+    icon_RW = gdk_pixbuf_new_from_xpm_data((const char **) ICON_PATTERN_RW);
 }
 
 int main(int argc, char *argv[]) {
@@ -572,14 +694,12 @@ int main(int argc, char *argv[]) {
     process_options(argc, argv);
     gdk_threads_init();
     gtk_init(NULL, NULL);
-    icon_xx = gdk_pixbuf_new_from_xpm_data((const char **) ICON_PATTERN_xx);
-    icon_Rx = gdk_pixbuf_new_from_xpm_data((const char **) ICON_PATTERN_Rx);
-    icon_xW = gdk_pixbuf_new_from_xpm_data((const char **) ICON_PATTERN_xW);
-    icon_RW = gdk_pixbuf_new_from_xpm_data((const char **) ICON_PATTERN_RW);
-    int dev_no = scan_devices();
-    assert(dev_no > 0);
+    if(opt_combine)
+        mk_blk_dev(DUMMY_DEV_NAME);
+    scan_actual_devices();
+    if(opt_combine)
+        g_timeout_add(update_interval, update_dummy_device, NULL);
     g_timeout_add(NEW_DEV_UPDATE_INTERVAL, register_new_dev, NULL);
-
     GThread *monitor = g_thread_try_new("monitor", new_dev_monitor, NULL, NULL);
     assert(monitor != NULL);
     if(opt_daemon) {

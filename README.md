@@ -43,7 +43,7 @@ make
 
 ## Usage
 
-When launched without any option, hddled will start immediately in non-daemon mode, showing one status icon for each detected block device (excluding loop devices). A list of possible options is presented when -h option is used.
+When launched without any option, hddled will start immediately in non-daemon mode, showing one status icon for each detected block device (excluding loop devices). If you want to combine all block devices into single icon use ````-c```` option. A list of possible options is presented when ````-h```` option is used.
 
 ````
 $ ./hddled -h
@@ -52,6 +52,7 @@ Usage: hddled [options...]
 
 Possible options are:
  -b RRGGBB       - LEDs' background color (defaults to 000000)
+ -c              - combine activity of all devices into one icon
  -d              - daemonize hddled process
  -h              - print this help message and quit
  -i RRGGBB       - inactive LED color (defaults to 3C3C3C)
