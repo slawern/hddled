@@ -1,5 +1,5 @@
 /***
- * 
+ *
  *  Copyright © 2022 Sławek Wernikowski (slawern)
  *  hddled -- emulate HDD LED using status bar icon
  *
@@ -44,7 +44,7 @@
 #define NOT(x)                      (!(x))
 #define IS_DUMMY(x)                 ((x)[0] == '\0')
 
-#define VERSION_STRING              "hddled 0.45/20220805"
+#define VERSION_STRING              "hddled 0.46/20220805"
 #define DEFAULT_UPDATE_INTERVAL     100     // ms->0.1s
 #define MIN_UPDATE_INTERVAL         10
 #define MAX_UPDATE_INTERVAL         10000
@@ -67,7 +67,7 @@ typedef struct {
                     blk_device_stat[PATH_MAX + 1];
     uint8_t         status;
     GtkStatusIcon  *status_icon;
-    GdkPixbuf      *current_icon, 
+    GdkPixbuf      *current_icon,
                    *last_icon;
     uint64_t        read,
                     prev_read;
@@ -90,9 +90,9 @@ typedef struct {
     char           *prefixes[MAX_EXCLUDED_DEVS];
 } EXCLUDED_DEVICES;
 
-GdkPixbuf           *icon_xx, 
-                    *icon_Rx, 
-                    *icon_xW, 
+GdkPixbuf           *icon_xx,
+                    *icon_Rx,
+                    *icon_xW,
                     *icon_RW;
 char                *ICON_PATTERN_xx[ICON_PATTERN_ELEMS],
                     *ICON_PATTERN_Rx[ICON_PATTERN_ELEMS],
@@ -261,7 +261,7 @@ pid_t read_pid_file(char *filename) {
     return pid;
 }
 
- bool is_color_ok(const char *opt_str) {
+bool is_color_ok(const char *opt_str) {
     if(strlen(opt_str) != 6)
         return false;
     for(int i = 0; i < 6; i++)
@@ -681,7 +681,9 @@ void mk_icons(void) {
     set_color(ICON_PATTERN_RW, UPPER_ARROW_IX,      READ_LED_COLOR);
     set_color(ICON_PATTERN_RW, LOWER_ARROW_IX,      WRITE_LED_COLOR);
     set_color(ICON_PATTERN_RW, BACKGROUND_COLOR_IX, BACKGROUND_COLOR);
+}
 
+void load_icons(void) {
     icon_xx = gdk_pixbuf_new_from_xpm_data((const char **) ICON_PATTERN_xx);
     icon_Rx = gdk_pixbuf_new_from_xpm_data((const char **) ICON_PATTERN_Rx);
     icon_xW = gdk_pixbuf_new_from_xpm_data((const char **) ICON_PATTERN_xW);
@@ -692,6 +694,7 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "\n" VERSION_STRING " " COPYRIGHT_STRING "\n\n");
     mk_icons();
     process_options(argc, argv);
+    load_icons();
     gdk_threads_init();
     gtk_init(NULL, NULL);
     if(opt_combine)
